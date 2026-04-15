@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Employer Dashboard — TechBid{% endblock %}
+{% block body %}
+<div class="page-wrap">
+<div class="container">
+  <div class="layout-2col">
+    <aside class="sidebar">
+      <ul class="sidebar-nav">
+        <li><a href="{{ url_for('employer_dashboard') }}" class="active">Dashboard</a></li>
+        <li><a href="{{ url_for('employer_post_job') }}">Post a Job</a></li>
+        <li><a href="{{ url_for('employer_payments') }}">Payments</a></li>
+        <li><a href="{{ url_for('complete_profile') }}">My Profile</a></li>
+        <li><a href="{{ url_for('contact') }}">Contact Us</a></li>
+      </ul>
+    </aside>
+    <main>
+      <div class="page-header">
+        <h1>Employer Dashboard</h1>
+        <p>{{ user.full_name or user.email }}{% if ep and ep.company_name %} · {{ ep.company_name }}{% endif %}</p>
+      </div>
+
+      {% if not is_subscribed %}
+      <div class="alert alert-warning">
+        <strong>Subscription required.</strong> Subscribe for $5/month to post jobs and access applicants.
+        <button id="subscribe-btn" onclick="subscribe()" class="btn btn-primary btn-sm" style="margin-left:12px;">Subscribe — $5/month</button>
+      </div>
+      {% else %}
+      <div class="alert alert-success">
+        ✓ Active subscription. Expires: {{ ep.subscription_expires_at.strftime('%b %d, %Y') if ep and ep.subscription_expires_at else 'N/A' }}
+      </div>
+      {% endif %}
+
+      <div class="stats-grid mb-3">
+        <div class="stat-card">
+          <div class="stat-label">Active Jobs</div>
+          <div class="stat-value">{{ my_jobs | selectattr('status','eq','open') | list | length }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Jobs</div>
+          <div class="stat-value">{{ my_jobs | length }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Pending Payments</div>
+          <div class="stat-value text-warning">{{ pending_pays | length }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Status</div>
+          <div class="stat-value" style="font-size:.95rem;">{{ 'Active' if is_subscribed else 'Inactive' }}</div>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <h2 class="section-title" style="margin:0;">My Jobs</h2>
+        {% if is_subscribed %}
+        <a href="{{ url_for('employer_post_job') }}" class="btn btn-primary btn-sm">+ Post New Job</a>
+        {% endif %}
+      </div>
+
+      {% if my_jobs %}
+      {% for job in my_jobs %}
+      <div class="job-card">
+        <div class="job-card-header">
+          <div>
+            <div class="job-title">{{ job.title }}</div>
+            <div class="job-meta">
+              <span>{{ job.category }}</span>
+              <span>${{ "%.0f"|format(job.budget_usd) }}</span>
+              <span>{{ job.app_count }} applicant{{ 's' if job.app_count != 1 }}</span>
+            </div>
+          </div>
+          <div>
+            <span class="job-badge {{ 'badge-open' if job.status=='open' else 'badge-closed' }}">{{ job.status | capitalize }}</span>
+            {% if job.app_count > 0 %}
+            <a href="{{ url_for('employer_applicants', job_id=job.id) }}" class="btn btn-secondary btn-sm" style="margin-left:8px;">View Applicants</a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+      {% else %}
+      <div class="empty-state">
+        <p>No jobs posted yet.</p>
+        {% if is_subscribed %}<a href="{{ url_for('employer_post_job') }}" class="btn btn-primary mt-2">Post your first job</a>{% endif %}
+      </div>
+      {% endif %}
+    </main>
+  </div>
+</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function subscribe() {
+  const btn = document.getElementById('subscribe-btn');
+  if (btn) btn.disabled = true;
+  fetch('/employer/subscribe', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-CSRF-Token':'{{ csrf_token() }}'},
+    body: JSON.stringify({provider:'paystack'})
+  }).then(r=>r.json()).then(data=>{
+    if (data.redirect_url) window.location.href = data.redirect_url;
+    else { alert(data.error || 'Payment error'); if(btn) btn.disabled=false; }
+  });
+}
+</script>
+{% endblock %}

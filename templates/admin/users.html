@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Users — Admin{% endblock %}
+{% block body %}
+<div class="page-wrap"><div class="container">
+  <div class="layout-2col">
+    <aside class="sidebar"><ul class="sidebar-nav">
+      <li><a href="{{ url_for('admin_dashboard') }}">Dashboard</a></li>
+      <li><a href="{{ url_for('admin_jobs') }}">Jobs</a></li>
+      <li><a href="{{ url_for('admin_users') }}" class="active">Users</a></li>
+      <li><a href="{{ url_for('admin_payments') }}">Payments</a></li>
+    </ul></aside>
+    <main>
+      <div class="page-header"><h1>All Users ({{ users|length }})</h1></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Specialty</th><th>Connects</th><th>Country</th><th>Joined</th></tr></thead>
+          <tbody>
+          {% for u in users %}
+          <tr>
+            <td>{{ u.full_name or '—' }}</td>
+            <td class="text-sm">{{ u.email }}</td>
+            <td><span class="job-badge {{ 'badge-real' if u.role=='employer' else 'badge-open' }}">{{ u.role }}</span></td>
+            <td class="text-sm">{{ u.specialty or '—' }}</td>
+            <td class="text-green fw-600">{{ u.connects_balance }}</td>
+            <td class="text-sm">{{ u.country or '—' }}</td>
+            <td class="text-sm text-muted">{{ u.created_at.strftime('%b %d, %Y') if u.created_at else '' }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+</div></div>
+{% endblock %}

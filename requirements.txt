@@ -1,0 +1,8 @@
+flask>=3.0
+mysql-connector-python>=8.3
+python-dotenv>=1.0
+requests>=2.31
+waitress>=3.0
+google-generativeai>=0.5
+PyGithub>=2.3
+Pillow>=10.0

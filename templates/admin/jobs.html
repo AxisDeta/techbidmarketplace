@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Manage Jobs — Admin{% endblock %}
+{% block body %}
+<div class="page-wrap"><div class="container">
+  <div class="layout-2col">
+    <aside class="sidebar"><ul class="sidebar-nav">
+      <li><a href="{{ url_for('admin_dashboard') }}">Dashboard</a></li>
+      <li><a href="{{ url_for('admin_jobs') }}" class="active">Jobs</a></li>
+      <li><a href="{{ url_for('admin_users') }}">Users</a></li>
+      <li><a href="{{ url_for('admin_payments') }}">Payments</a></li>
+      <li><a href="{{ url_for('admin_create_robot_job') }}">Create Robot Job</a></li>
+    </ul></aside>
+    <main>
+      <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;">
+        <h1>All Jobs ({{ jobs|length }})</h1>
+        <div style="display:flex;gap:8px;">
+          <form method="POST" action="{{ url_for('admin_generate_ai_jobs') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-primary btn-sm">🤖 Generate AI Jobs</button>
+          </form>
+          <a href="{{ url_for('admin_create_robot_job') }}" class="btn btn-secondary btn-sm">+ Robot Job</a>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Title</th><th>Category</th><th>Type</th><th>Budget</th><th>Robot?</th><th>Winner</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+          {% for job in jobs %}
+          <tr>
+            <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ job.title }}</td>
+            <td class="text-sm">{{ job.category }}</td>
+            <td><span class="job-badge badge-{{ job.job_type }}">{{ job.job_type }}</span></td>
+            <td>${{ "%.0f"|format(job.budget_usd) }}</td>
+            <td>{{ '🤖' if job.is_robot else '👤' }}</td>
+            <td class="text-sm">{% if job.robot_name %}{{ job.robot_name }} ({{ job.connects_shown }}c){% else %}—{% endif %}</td>
+            <td><span class="job-badge badge-{{ job.status }}">{{ job.status }}</span></td>
+            <td>
+              <form method="POST" action="{{ url_for('admin_delete_job', job_id=job.id) }}" onsubmit="return confirm('Delete this job?')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+</div></div>
+{% endblock %}

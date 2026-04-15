@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} — TechBid{% endblock %}
+{% block body %}
+<div class="page-wrap">
+<div class="container" style="max-width:820px;">
+  <a href="{{ url_for('worker_jobs') }}" class="text-muted text-sm" style="display:inline-flex;align-items:center;gap:6px;margin-bottom:16px;">
+    ← Back to jobs
+  </a>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+      <div>
+        <h1 style="font-size:1.3rem;">{{ job.title }}</h1>
+        <div class="job-meta mt-1">
+          <span>{{ job.category }}</span>
+          <span class="job-badge {{ 'badge-fixed' if job.job_type=='fixed' else 'badge-hourly' if job.job_type=='hourly' else 'badge-daily' }}">{{ job.job_type | capitalize }}</span>
+          <span>${{ "%.0f"|format(job.budget_usd) }}</span>
+          {% if job.duration %}<span>{{ job.duration }}</span>{% endif %}
+          <span>{{ applicant_count }} applicant{{ 's' if applicant_count != 1 }}</span>
+          <span>{{ job.connects_required }} connects to apply</span>
+        </div>
+      </div>
+      <div>
+        {% if job.is_robot %}
+        <span class="job-badge badge-robot">Verified Job</span>
+        {% else %}
+        <span class="job-badge badge-real">Real Employer</span>
+        {% endif %}
+      </div>
+    </div>
+
+    <hr class="divider">
+    <h2 class="section-title" style="font-size:.95rem;">Job Description</h2>
+    <p style="color:var(--text);white-space:pre-line;line-height:1.7;">{{ job.description }}</p>
+
+    {% if job.robot_name and job.is_robot %}
+    <hr class="divider">
+    <h2 class="section-title" style="font-size:.95rem;">Top Awarded Candidate</h2>
+    <div class="winner-box">
+      <div class="winner-avatar">🤖</div>
+      <div>
+        <div class="winner-label">Currently Awarded To</div>
+        <div class="winner-name">{{ job.robot_name }}</div>
+        <div class="winner-conn">{{ job.connects_shown }} connects — can you beat this?</div>
+      </div>
+    </div>
+    <p class="text-sm text-muted mt-1">Build more connects to improve your ranking.</p>
+    {% endif %}
+
+    <hr class="divider">
+
+    {% if already_applied %}
+    <div class="alert alert-info">You have already applied for this job.</div>
+    {% elif job.status != 'open' %}
+    <div class="alert alert-warning">This job is no longer accepting applications.</div>
+    {% else %}
+    <h2 class="section-title" style="font-size:.95rem;">Apply for this job</h2>
+    <p class="text-sm text-muted mb-2">
+      This will use <strong>{{ job.connects_required }} connects</strong> from your balance
+      (you have <strong class="text-green">{{ current_connects }}</strong>).
+    </p>
+    {% if current_connects < job.connects_required %}
+    <div class="alert alert-warning">
+      You need {{ job.connects_required }} connects to apply. <a href="{{ url_for('worker_buy_connects') }}">Buy connects →</a>
+    </div>
+    {% else %}
+    <form method="POST" action="{{ url_for('worker_apply', job_id=job.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-group">
+        <label class="form-label">Cover letter / pitch <span class="text-muted">(optional)</span></label>
+        <textarea id="cover_letter" name="cover_letter" class="form-textarea" rows="5"
+                  placeholder="Tell the employer why you're the best fit for this role…"></textarea>
+      </div>
+      <button id="apply-btn" type="submit" class="btn btn-primary">
+        Apply now — {{ job.connects_required }} connects
+      </button>
+    </form>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+</div>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Post a Job — TechBid{% endblock %}
+{% block body %}
+<div class="page-wrap">
+<div class="container" style="max-width:680px;">
+  <div class="page-header"><h1>Post a Job</h1><p>Fill in the details below. Your job will be live immediately.</p></div>
+  <form method="POST">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-group">
+      <label class="form-label">Job title *</label>
+      <input id="title" type="text" name="title" class="form-input" required placeholder="e.g. Senior React Developer needed">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Category *</label>
+        <select id="category" name="category" class="form-select" required>
+          <option value="">— Select —</option>
+          {% for c in categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Job type *</label>
+        <select id="job_type" name="job_type" class="form-select" required>
+          {% for t in job_types %}<option value="{{ t }}">{{ t | capitalize }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Budget (USD) *</label>
+        <input id="budget_usd" type="number" name="budget_usd" class="form-input" min="1" step="0.01" required placeholder="e.g. 500">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Duration</label>
+        <input id="duration" type="text" name="duration" class="form-input" placeholder="e.g. 2 weeks, 1 month">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Job description *</label>
+      <textarea id="description" name="description" class="form-textarea" rows="7" required
+                placeholder="Describe the role, responsibilities, required skills, and any other details…"></textarea>
+    </div>
+    <button type="submit" id="post-btn" class="btn btn-primary btn-block">Post Job</button>
+  </form>
+</div>
+</div>
+{% endblock %}

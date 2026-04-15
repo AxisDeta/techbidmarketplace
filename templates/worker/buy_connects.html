@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Buy Connects — TechBid{% endblock %}
+{% block body %}
+<div class="page-wrap">
+<div class="container">
+  <div class="layout-2col">
+    <aside class="sidebar">
+      <ul class="sidebar-nav">
+        <li><a href="{{ url_for('worker_dashboard') }}">Dashboard</a></li>
+        <li><a href="{{ url_for('worker_jobs') }}">Find Work</a></li>
+        <li><a href="{{ url_for('worker_profile') }}">My Profile</a></li>
+        <li><a href="{{ url_for('worker_buy_connects') }}" class="active">Buy Connects</a></li>
+        <li><a href="{{ url_for('contact') }}">Contact Us</a></li>
+      </ul>
+    </aside>
+    <main>
+      <div class="page-header">
+        <h1>Buy Connects</h1>
+        <p>You have <strong class="text-green">{{ current_connects }} connects</strong>. Each job requires at least 10 connects to apply.</p>
+      </div>
+
+      <div class="pkg-grid" id="pkg-grid">
+        {% for pkg in packages %}
+        <div class="pkg-card" id="pkg-{{ pkg.id }}" onclick="selectPackage('{{ pkg.id }}')">
+          <div class="pkg-connects">{{ pkg.connects }}<small style="font-size:.9rem;font-weight:400;color:var(--text-muted)"> connects</small></div>
+          <div class="pkg-price">${{ pkg.price_usd }}</div>
+          <div class="pkg-name">{{ pkg.name }} Pack</div>
+        </div>
+        {% endfor %}
+        <div class="pkg-card" onclick="location.href='{{ url_for('contact') }}'">
+          <div class="pkg-connects" style="font-size:1.2rem;">Custom</div>
+          <div class="pkg-price">Contact us</div>
+          <div class="pkg-name">Large volume deals</div>
+        </div>
+      </div>
+
+      <div id="payment-section" style="display:none;" class="card mb-3">
+        <h2 class="section-title">Choose payment method</h2>
+        <p class="text-sm text-muted mb-2">Prices charged in KES (Kenyan Shillings). Rate: 1 USD ≈ 130 KES.</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <button id="btn-paystack" onclick="checkout('paystack')" class="btn btn-primary">Pay with Paystack (Kenya)</button>
+          <button id="btn-pesapal" onclick="checkout('pesapal')" class="btn btn-blue">Pay with PesaPal (International)</button>
+        </div>
+        <p class="text-sm text-muted mt-2">Connects are credited instantly after payment confirmation.</p>
+      </div>
+
+      {% if history %}
+      <h2 class="section-title">Payment History</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Pack</th><th>Connects</th><th>Amount (USD)</th><th>Provider</th><th>Status</th><th>Date</th></tr></thead>
+          <tbody>
+          {% for p in history %}
+          <tr>
+            <td>{{ p.reference }}</td>
+            <td>{{ p.connects_awarded }}</td>
+            <td>${{ p.amount_usd }}</td>
+            <td>{{ p.provider | capitalize }}</td>
+            <td><span class="job-badge {{ 'badge-open' if p.status=='confirmed' else 'badge-closed' if p.status=='failed' else 'badge-robot' }}">{{ p.status | capitalize }}</span></td>
+            <td class="text-sm text-muted">{{ p.created_at.strftime('%b %d, %Y') if p.created_at else '' }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </main>
+  </div>
+</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let selectedPkg = null;
+function selectPackage(pkgId) {
+  document.querySelectorAll('.pkg-card').forEach(c => c.classList.remove('selected'));
+  const card = document.getElementById('pkg-' + pkgId);
+  if (card) { card.classList.add('selected'); selectedPkg = pkgId; }
+  document.getElementById('payment-section').style.display = selectedPkg ? 'block' : 'none';
+}
+function checkout(provider) {
+  if (!selectedPkg) return;
+  const btns = document.querySelectorAll('#payment-section .btn');
+  btns.forEach(b => b.disabled = true);
+  fetch('/worker/connects/checkout', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json','X-CSRF-Token':'{{ csrf_token() }}'},
+    body: JSON.stringify({package_id: selectedPkg, provider: provider})
+  }).then(r => r.json()).then(data => {
+    if (data.redirect_url) window.location.href = data.redirect_url;
+    else { alert(data.error || 'Payment failed. Please try again.'); btns.forEach(b => b.disabled = false); }
+  }).catch(() => { alert('Network error. Please try again.'); btns.forEach(b => b.disabled = false); });
+}
+</script>
+{% endblock %}
