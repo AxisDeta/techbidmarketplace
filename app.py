@@ -113,7 +113,7 @@ class Settings:
     mysql_ssl_ca:   str = field(default_factory=lambda: _env("MYSQL_SSL_CA"))
     mysql_ssl_disabled: bool = field(default_factory=lambda: _env_bool("MYSQL_SSL_DISABLED", False))
     mysql_connect_timeout: int = field(default_factory=lambda: _env_int("MYSQL_CONNECT_TIMEOUT", 10))
-    mysql_use_pool: bool = field(default_factory=lambda: _env_bool("MYSQL_USE_POOL", False))
+    mysql_use_pool: bool = field(default_factory=lambda: _env_bool("MYSQL_USE_POOL", True))
     table_prefix:   str = field(default_factory=lambda: _env("DB_TABLE_PREFIX", "tbm_"))
 
     paystack_secret_key:    str = field(default_factory=lambda: _env("PAYSTACK_SECRET_KEY"))
@@ -196,13 +196,28 @@ class MySQLStore:
         if not settings.mysql_ssl_disabled and settings.mysql_ssl_ca:
             self._kw["ssl_ca"] = settings.mysql_ssl_ca
         self._pool = None
-        if settings.mysql_use_pool:
-            pk = dict(self._kw)
-            pk.update({"pool_name": "tbm_pool", "pool_size": 10, "pool_reset_session": False})
+        pk = dict(self._kw)
+        pk.update({"pool_name": "tbm_pool", "pool_size": 16, "pool_reset_session": False})
+        try:
             self._pool = mysql.connector.pooling.MySQLConnectionPool(**pk)
+        except Exception as exc:
+            LOG.warning("Connection pool init failed (%s), falling back to per-request connections.", exc)
+        self._local = threading.local()
 
     def t(self, name: str) -> str:
         return f"{self.prefix}{re.sub(r'[^a-zA-Z0-9_]', '', name)}"
+
+    def _get_conn(self):
+        """Return the thread-local request-scoped connection if available, else a fresh one."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.ping(reconnect=True, attempts=1, delay=0)
+                return conn, False
+            except Exception:
+                pass
+        raw = self._pool.get_connection() if self._pool else mysql.connector.connect(**self._kw)
+        return raw, True
 
     def _connect(self):
         last = None
@@ -220,12 +235,38 @@ class MySQLStore:
                 time.sleep(0.05)
         raise last or RuntimeError("Cannot get MySQL connection.")
 
+    def open_request_conn(self) -> None:
+        """Open and cache a connection for the lifetime of the current request."""
+        try:
+            conn = self._pool.get_connection() if self._pool else mysql.connector.connect(**self._kw)
+            conn.ping(reconnect=True, attempts=2, delay=0)
+            self._local.conn = conn
+        except Exception as exc:
+            LOG.warning("Could not open request-scoped connection: %s", exc)
+
+    def close_request_conn(self) -> None:
+        """Release the request-scoped connection back to the pool."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try: conn.close()
+            except: pass
+            self._local.conn = None
+
     @staticmethod
     def _close(conn) -> None:
         try: conn.close()
         except: pass
 
     def query_all(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+        req_conn = getattr(self._local, "conn", None)
+        if req_conn is not None:
+            try:
+                cur = req_conn.cursor(dictionary=True)
+                cur.execute(sql, params)
+                return list(cur.fetchall())
+            except mysql.connector.Error as exc:
+                LOG.warning("query_all on request conn failed: %s", exc)
+
         last = None
         for _ in range(2):
             conn = self._connect()
@@ -239,6 +280,15 @@ class MySQLStore:
         raise last or RuntimeError("query_all failed.")
 
     def query_one(self, sql: str, params: tuple = ()) -> dict[str, Any] | None:
+        req_conn = getattr(self._local, "conn", None)
+        if req_conn is not None:
+            try:
+                cur = req_conn.cursor(dictionary=True)
+                cur.execute(sql, params)
+                return cur.fetchone()
+            except mysql.connector.Error as exc:
+                LOG.warning("query_one on request conn failed: %s", exc)
+
         last = None
         for _ in range(2):
             conn = self._connect()
@@ -408,6 +458,25 @@ class MySQLStore:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
             conn.commit()
+
+            # Add indexes that may be missing on existing deployments
+            for idx_sql in [
+                f"ALTER TABLE {users} ADD INDEX idx_{p}users_role (role)",
+                f"ALTER TABLE {users} ADD INDEX idx_{p}users_created (created_at)",
+                f"ALTER TABLE {apps} ADD INDEX idx_{p}app_user (user_id)",
+                f"ALTER TABLE {apps} ADD INDEX idx_{p}app_status (status)",
+                f"ALTER TABLE {jobs} ADD INDEX idx_{p}jobs_employer (employer_id)",
+                f"ALTER TABLE {jobs} ADD INDEX idx_{p}jobs_created (created_at)",
+                f"ALTER TABLE {epays} ADD INDEX idx_{p}epays_employer (employer_id)",
+                f"ALTER TABLE {epays} ADD INDEX idx_{p}epays_status (status)",
+                f"ALTER TABLE {notifs} ADD INDEX idx_{p}notif_read (is_read)",
+            ]:
+                try:
+                    cur.execute(idx_sql)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+
             LOG.info("TechBid schema verified.")
         finally:
             self._close(conn)
@@ -685,15 +754,22 @@ PESAPAL  = PesapalClient(SETTINGS)
 LIMITER  = RateLimiter()
 
 
+# ── Request lifecycle — one connection per request ──────────────────────────────
+@app.before_request
+def _before():
+    if session.get("user_id"):
+        STORE.open_request_conn()
+
+@app.teardown_request
+def _teardown(exc):
+    STORE.close_request_conn()
+
+
 # ── Context processors ─────────────────────────────────────────────────────────
 @app.context_processor
 def inject_globals():
     uid = session.get("user_id")
-    notif_count = 0
-    if uid:
-        row = STORE.query_one(
-            f"SELECT COUNT(*) as c FROM {STORE.t('notifications')} WHERE user_id=%s AND is_read=0", (uid,))
-        notif_count = row["c"] if row else 0
+    notif_count = session.get("notif_count", 0)
     return {
         "current_user_id": uid,
         "current_role": session.get("role"),
@@ -702,18 +778,25 @@ def inject_globals():
         "notif_count": notif_count,
         "categories": JOB_CATEGORIES,
         "packages": CONNECTS_PACKAGES,
+        "now": __import__("datetime").datetime.utcnow(),
     }
 
 
 def _refresh_session(user_id: int) -> None:
-    u = STORE.query_one(f"SELECT * FROM {STORE.t('users')} WHERE id=%s", (user_id,))
+    u = STORE.query_one(
+        f"SELECT u.*, COALESCE(n.cnt,0) as unread_notifs "
+        f"FROM {STORE.t('users')} u "
+        f"LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM {STORE.t('notifications')} "
+        f"WHERE is_read=0 GROUP BY user_id) n ON n.user_id=u.id "
+        f"WHERE u.id=%s", (user_id,))
     if u:
-        session["user_id"]    = u["id"]
-        session["role"]       = u["role"]
-        session["full_name"]  = u["full_name"] or u["email"]
-        session["connects"]   = int(u["connects_balance"])
-        session["profile_ok"] = bool(u["profile_complete"])
-        session["email"]      = u["email"]
+        session["user_id"]     = u["id"]
+        session["role"]        = u["role"]
+        session["full_name"]   = u["full_name"] or u["email"]
+        session["connects"]    = int(u["connects_balance"])
+        session["profile_ok"]  = bool(u["profile_complete"])
+        session["email"]       = u["email"]
+        session["notif_count"] = int(u["unread_notifs"])
 
 
 # ── Decorators ─────────────────────────────────────────────────────────────────
@@ -1043,7 +1126,6 @@ def complete_profile():
 @worker_required
 def worker_dashboard():
     uid = session["user_id"]
-    _refresh_session(uid)
     user = STORE.query_one(f"SELECT * FROM {STORE.t('users')} WHERE id=%s", (uid,))
     recent_apps = STORE.query_all(
         f"SELECT a.*, j.title, j.category, j.budget_usd, j.job_type FROM {STORE.t('applications')} a "
@@ -1052,7 +1134,9 @@ def worker_dashboard():
     )
     notifs = STORE.query_all(
         f"SELECT * FROM {STORE.t('notifications')} WHERE user_id=%s ORDER BY created_at DESC LIMIT 10", (uid,))
-    STORE.execute(f"UPDATE {STORE.t('notifications')} SET is_read=1 WHERE user_id=%s", (uid,))
+    if notifs:
+        STORE.execute(f"UPDATE {STORE.t('notifications')} SET is_read=1 WHERE user_id=%s", (uid,))
+        session["notif_count"] = 0
     return render_template("worker/dashboard.html", user=user, recent_apps=recent_apps, notifs=notifs)
 
 
@@ -1089,8 +1173,14 @@ def worker_jobs():
         tuple(params) + (per_page, offset),
     )
     uid = session["user_id"]
-    applied_ids = {r["job_id"] for r in STORE.query_all(
-        f"SELECT job_id FROM {STORE.t('applications')} WHERE user_id=%s", (uid,))}
+    job_ids_on_page = tuple(j["id"] for j in jobs)
+    if job_ids_on_page:
+        placeholders = ",".join(["%s"] * len(job_ids_on_page))
+        applied_ids = {r["job_id"] for r in STORE.query_all(
+            f"SELECT job_id FROM {STORE.t('applications')} WHERE user_id=%s AND job_id IN ({placeholders})",
+            (uid,) + job_ids_on_page)}
+    else:
+        applied_ids = set()
 
     pages = max(1, (total + per_page - 1) // per_page)
     return render_template("worker/jobs.html", jobs=jobs, applied_ids=applied_ids,
@@ -1159,7 +1249,6 @@ def worker_apply(job_id):
 @worker_required
 def worker_buy_connects():
     uid = session["user_id"]
-    _refresh_session(uid)
     history = STORE.query_all(
         f"SELECT * FROM {STORE.t('payments')} WHERE user_id=%s ORDER BY created_at DESC LIMIT 20", (uid,))
     return render_template("worker/buy_connects.html",
@@ -1523,21 +1612,29 @@ def admin_logout():
 @app.route("/admin")
 @admin_required
 def admin_dashboard():
-    users_count   = (STORE.query_one(f"SELECT COUNT(*) as c FROM {STORE.t('users')}") or {}).get("c", 0)
-    workers_count = (STORE.query_one(f"SELECT COUNT(*) as c FROM {STORE.t('users')} WHERE role='worker'") or {}).get("c", 0)
-    emp_count     = (STORE.query_one(f"SELECT COUNT(*) as c FROM {STORE.t('users')} WHERE role='employer'") or {}).get("c", 0)
-    jobs_count    = (STORE.query_one(f"SELECT COUNT(*) as c FROM {STORE.t('jobs')}") or {}).get("c", 0)
-    robot_count   = (STORE.query_one(f"SELECT COUNT(*) as c FROM {STORE.t('jobs')} WHERE is_robot=1") or {}).get("c", 0)
-    apps_count    = (STORE.query_one(f"SELECT COUNT(*) as c FROM {STORE.t('applications')}") or {}).get("c", 0)
-    revenue_row   = STORE.query_one(f"SELECT COALESCE(SUM(amount_usd),0) as r FROM {STORE.t('payments')} WHERE status='confirmed'")
-    revenue_usd   = float(revenue_row["r"]) if revenue_row else 0.0
-    pending_disb  = (STORE.query_one(f"SELECT COUNT(*) as c FROM {STORE.t('employer_payments')} WHERE status='pending'") or {}).get("c", 0)
-    recent_pays   = STORE.query_all(
+    stats = STORE.query_one(
+        f"SELECT "
+        f"  (SELECT COUNT(*) FROM {STORE.t('users')}) as users_count, "
+        f"  (SELECT COUNT(*) FROM {STORE.t('users')} WHERE role='worker') as workers_count, "
+        f"  (SELECT COUNT(*) FROM {STORE.t('users')} WHERE role='employer') as emp_count, "
+        f"  (SELECT COUNT(*) FROM {STORE.t('jobs')}) as jobs_count, "
+        f"  (SELECT COUNT(*) FROM {STORE.t('jobs')} WHERE is_robot=1) as robot_count, "
+        f"  (SELECT COUNT(*) FROM {STORE.t('applications')}) as apps_count, "
+        f"  (SELECT COALESCE(SUM(amount_usd),0) FROM {STORE.t('payments')} WHERE status='confirmed') as revenue_usd, "
+        f"  (SELECT COUNT(*) FROM {STORE.t('employer_payments')} WHERE status='pending') as pending_disb"
+    ) or {}
+    recent_pays = STORE.query_all(
         f"SELECT p.*, u.email FROM {STORE.t('payments')} p JOIN {STORE.t('users')} u ON u.id=p.user_id "
         f"ORDER BY p.created_at DESC LIMIT 10")
-    return render_template("admin/dashboard.html", users_count=users_count, workers_count=workers_count,
-                           emp_count=emp_count, jobs_count=jobs_count, robot_count=robot_count,
-                           apps_count=apps_count, revenue_usd=revenue_usd, pending_disb=pending_disb,
+    return render_template("admin/dashboard.html",
+                           users_count=stats.get("users_count", 0),
+                           workers_count=stats.get("workers_count", 0),
+                           emp_count=stats.get("emp_count", 0),
+                           jobs_count=stats.get("jobs_count", 0),
+                           robot_count=stats.get("robot_count", 0),
+                           apps_count=stats.get("apps_count", 0),
+                           revenue_usd=float(stats.get("revenue_usd") or 0),
+                           pending_disb=stats.get("pending_disb", 0),
                            recent_pays=recent_pays)
 
 
